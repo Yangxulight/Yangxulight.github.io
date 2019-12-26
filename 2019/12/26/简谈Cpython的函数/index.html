@@ -17,7 +17,7 @@
 <meta property="og:description" content="前言最近看了一门CSC253的课程，然后公司内部需要做一个python topic相关的sharing，于是写了这篇文章先简单记录一下相关的内容。后续还会有CPython Internal的总结文章。本文会先讲解Python函数相关的东西，然后再引入闭包以及装饰器的内容，最后通过解读Cpython的函数对象实现来从更深层次理解这些设计的底层实现。">
 <meta property="og:image" content="http://yoursite.com/images/funobj.jpg">
 <meta property="og:image" content="http://yoursite.com/images/closure.png">
-<meta property="og:updated_time" content="2019-12-26T07:05:50.507Z">
+<meta property="og:updated_time" content="2019-12-26T08:00:48.044Z">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="简谈Cpython的函数">
 <meta name="twitter:description" content="前言最近看了一门CSC253的课程，然后公司内部需要做一个python topic相关的sharing，于是写了这篇文章先简单记录一下相关的内容。后续还会有CPython Internal的总结文章。本文会先讲解Python函数相关的东西，然后再引入闭包以及装饰器的内容，最后通过解读Cpython的函数对象实现来从更深层次理解这些设计的底层实现。">
@@ -186,22 +186,74 @@
 <li>能作为函数的返回结果</li>
 </ul>
 <p>作为函数，它与普通的对象实例的区别是什么呢？<br><figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">C</span><span class="params">(object)</span>:</span></span><br><span class="line">    <span class="keyword">pass</span></span><br><span class="line"><span class="function"><span class="keyword">def</span> <span class="title">func</span><span class="params">(a=<span class="number">1</span>, *, key1=<span class="string">"v1"</span>)</span>:</span></span><br><span class="line">    <span class="keyword">pass</span></span><br><span class="line">obj = C()</span><br><span class="line">diff = sorted(set(dir(func)) - set(dir(obj)))</span><br><span class="line"><span class="keyword">for</span> d <span class="keyword">in</span> diff:</span><br><span class="line">    f = getattr(func, d)</span><br><span class="line">    print(<span class="string">"&#123;0&#125;: &#123;1&#125;: &#123;2&#125;"</span>.format(d, type(f), f))</span><br><span class="line"><span class="comment">## Results:</span></span><br><span class="line"><span class="comment">#__annotations__: &lt;class 'dict'&gt;</span></span><br><span class="line"><span class="comment"># __call__: &lt;class 'method-wrapper'&gt;</span></span><br><span class="line"><span class="comment"># __closure__: &lt;class 'NoneType'&gt;</span></span><br><span class="line"><span class="comment"># __code__: &lt;class 'code'&gt;</span></span><br><span class="line"><span class="comment"># __defaults__: &lt;class 'tuple'&gt;</span></span><br><span class="line"><span class="comment"># __get__: &lt;class 'method-wrapper'&gt;</span></span><br><span class="line"><span class="comment"># __globals__: &lt;class 'dict'&gt;</span></span><br><span class="line"><span class="comment"># __kwdefaults__: &lt;class 'dict'&gt;</span></span><br><span class="line"><span class="comment"># __name__: &lt;class 'str'&gt;</span></span><br><span class="line"><span class="comment"># __qualname__: &lt;class 'str'&gt;</span></span><br></pre></td></tr></table></figure></p>
-<p>对于函数对象的额外属性，我们的总结如下:<br>| name | type | description |<br>| :—-| :—- | :—- |<br>| __annotations__ | dict | 参数和返回值的注解 |<br>| __call__ | method-wrapper | 实现()运算符，可调用对象协议 |<br>| __closure__ | tuple | 函数闭包，即对自由变量的绑定(一般是None) |<br>| __code__ | code | 编译成字节码的函数元数据以及函数定义 |<br>| <strong>__defaults__</strong> | tuple | 形参的默认值 |<br>| __get__ | method-wrapper | 实现制度描述符协议 |<br>| __globals__ | dict | 函数所在模块的全局变量 |<br>| <strong>__kwdefaults__</strong> | tuple | 仅限关键字传参的默认值 |<br>| __name__ | str | 函数名 |<br>| __qualname__ | str | 函数的限定名字 |</p>
-<ol>
-<li>函数的参数</li>
-</ol>
+<p>对于函数对象的额外属性，我们的总结如下:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align:left">name</th>
+<th style="text-align:left">type</th>
+<th style="text-align:left">description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left">__annotations__</td>
+<td style="text-align:left">dict</td>
+<td style="text-align:left">参数和返回值的注解</td>
+</tr>
+<tr>
+<td style="text-align:left">__call__</td>
+<td style="text-align:left">method-wrapper</td>
+<td style="text-align:left">实现()运算符，可调用对象协议</td>
+</tr>
+<tr>
+<td style="text-align:left">__closure__</td>
+<td style="text-align:left">tuple</td>
+<td style="text-align:left">函数闭包，即对自由变量的绑定(一般是None)</td>
+</tr>
+<tr>
+<td style="text-align:left">__code__</td>
+<td style="text-align:left">code</td>
+<td style="text-align:left">编译成字节码的函数元数据以及函数定义</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>__defaults__</strong></td>
+<td style="text-align:left">tuple</td>
+<td style="text-align:left">形参的默认值</td>
+</tr>
+<tr>
+<td style="text-align:left">__get__</td>
+<td style="text-align:left">method-wrapper</td>
+<td style="text-align:left">实现制度描述符协议</td>
+</tr>
+<tr>
+<td style="text-align:left">__globals__</td>
+<td style="text-align:left">dict</td>
+<td style="text-align:left">函数所在模块的全局变量</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>__kwdefaults__</strong></td>
+<td style="text-align:left">tuple</td>
+<td style="text-align:left">仅限关键字传参的默认值</td>
+</tr>
+<tr>
+<td style="text-align:left">__name__</td>
+<td style="text-align:left">str</td>
+<td style="text-align:left">函数名</td>
+</tr>
+<tr>
+<td style="text-align:left">__qualname__</td>
+<td style="text-align:left">str</td>
+<td style="text-align:left">函数的限定名字</td>
+</tr>
+</tbody>
+</table>
+<p>1.函数的参数</p>
 <p>函数的定位参数和关键字参数的默认值存放在<code>__defaults__</code>里，仅限关键词传参的默认值放在<code>__kwdefaults__</code>里。除此之外，函数的参数变量还有函数定义的局部变量名放在<code>__code__.co_varnames</code>中，其中前<code>__code__.co_argcount</code>个变量为参数变量。</p>
-<ol>
-<li>函数的注解</li>
-</ol>
+<p>2.函数的注解</p>
 <p>函数注解是位函数声明中的参数和返回值附加元数据，存放在<code>__annotations__</code>中。对解释器来说，这些数据没有什么用，Python也不做检查、验证。这些可以为IDE和lint程序等工具做静态类型检查提供额外信息。下面就是一个例子:<br><figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">def</span> <span class="title">func</span><span class="params">(text:str, len:<span class="string">'int &gt; 0'</span>=<span class="number">80</span>)</span> -&gt; str:</span></span><br><span class="line">    <span class="keyword">return</span> text</span><br></pre></td></tr></table></figure></p>
-<ol>
-<li><p>全局的变量表<br>函数的<code>__globals__</code>里面存放了一个该函数的全局变量表，通过这个表格可以访问到全局定义的函数以及变量等等。当然，在Cpython里面的Function Object里，这个变量就是一个指向全局变量表格的指针。这里有个简单的问题需要问一下，为什么需要在每个函数都存放这样一个指针呢？指针可以很快的知道全局变量表的变化是一方面原因。而把指针变量放在函数对象里面，而不是让所有函数对象共同使用同一个指针变量的原因是: <strong>不同模块里的函数可能有不同的全局变量表</strong>。举个例子:</p>
-<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">#a.py</span></span><br><span class="line">a = <span class="number">1</span></span><br><span class="line"><span class="function"><span class="keyword">def</span> <span class="title">f</span><span class="params">()</span>:</span></span><br><span class="line">    print(a)  <span class="comment"># __globals__ 指向a.py的全局变量表  </span></span><br><span class="line"><span class="comment"># b.py</span></span><br><span class="line">a = <span class="number">2</span></span><br><span class="line"><span class="function"><span class="keyword">def</span> <span class="title">f</span><span class="params">()</span>:</span></span><br><span class="line">    print(a) <span class="comment"># __globals__ 指向b.py的全局变量表</span></span><br></pre></td></tr></table></figure>
-</li>
-<li><p><code>__code__</code>属性<br>函数的执行体编译的字节码存放在其<code>__code__</code>里面。我们可以通过<code>__code__.co_code</code>访问到编译后的字节码。当调用该函数时，Python解释器会根据这些字节码来执行对应的操作。</p>
-</li>
-</ol>
+<p>3.全局的变量表<br>函数的<code>__globals__</code>里面存放了一个该函数的全局变量表，通过这个表格可以访问到全局定义的函数以及变量等等。当然，在Cpython里面的Function Object里，这个变量就是一个指向全局变量表格的指针。这里有个简单的问题需要问一下，为什么需要在每个函数都存放这样一个指针呢？指针可以很快的知道全局变量表的变化是一方面原因。而把指针变量放在函数对象里面，而不是让所有函数对象共同使用同一个指针变量的原因是: <strong>不同模块里的函数可能有不同的全局变量表</strong>。举个例子:<br><figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">#a.py</span></span><br><span class="line">a = <span class="number">1</span></span><br><span class="line"><span class="function"><span class="keyword">def</span> <span class="title">f</span><span class="params">()</span>:</span></span><br><span class="line">    print(a)  <span class="comment"># __globals__ 指向a.py的全局变量表  </span></span><br><span class="line"><span class="comment"># b.py</span></span><br><span class="line">a = <span class="number">2</span></span><br><span class="line"><span class="function"><span class="keyword">def</span> <span class="title">f</span><span class="params">()</span>:</span></span><br><span class="line">    print(a) <span class="comment"># __globals__ 指向b.py的全局变量表</span></span><br></pre></td></tr></table></figure></p>
+<p>4.<code>__code__</code>属性<br>函数的执行体编译的字节码存放在其<code>__code__</code>里面。我们可以通过<code>__code__.co_code</code>访问到编译后的字节码。当调用该函数时，Python解释器会根据这些字节码来执行对应的操作。</p>
 <p>我们可以看到，Python的函数对象就是类似如下的结构<br><img src="/images/funobj.jpg" alt=""></p>
 <h2 id="装饰器-Decorator"><a href="#装饰器-Decorator" class="headerlink" title="装饰器(Decorator)"></a>装饰器(Decorator)</h2><p>装饰器是一个callable对象，参数是另外一个函数(被装饰的函数)。通常装饰器会处理被装饰的函数并且把它返回，或者替换成另外一个函数(callable对象)。严格来说，装饰器只是语法糖，但是它有两大特性:</p>
 <ul>
